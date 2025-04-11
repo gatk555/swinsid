@@ -4,18 +4,22 @@
 CPPFLAGS=-traditional-cpp -I/usr/avr/sys-root/include -D__AVR_ATmega88A__ -D__ASSEMBLER__
 FIRMWARES=SwinSID88_lazy_jones_fix.hex SwinSID88_20120524.hex SwinSID88_20141027.hex
 
+# This probably depends on the OS.
+
+AVR_HEADERS=/usr/lib/avr/include
+
 all: $(FIRMWARES)
 
 # Dependency file is needed to make sure firmware is rebuilt when include file changes.
 %.d: %.asm
 		rm -f $@; \
-		 cpp -MM $(CPPFLAGS) $< > $@.$$$$; \
+		 cpp -MM $(CPPFLAGS) -I$(AVR_HEADERS) $< > $@.$$$$; \
 		 sed 's,\($*\)\.o[ :]*,\1.o $@ : ,g' < $@.$$$$ > $@; \
 		 rm -f $@.$$$$
 
 
 %.o: %.asm %.d
-		cpp $(CPPFLAGS) $< | \
+		cpp $(CPPFLAGS) -I$(AVR_HEADERS) $< | \
 		  avr-as -mmcu=atmega88a -o $@
 
 %.elf: %.o swinsid_atmega88.ld
