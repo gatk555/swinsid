@@ -68,100 +68,122 @@ b7	= 0x07
 irq_reset:
 	rjmp	reset
 
-; Explicitely set the current address to make the assembler complain if above code
-; is modified and increases in length.
+; Explicitly set the current address to make the assembler complain
+; if above code	is modified and increases in length.
+
 .org 0x002,0xff
 
 irq_chipselect:
     ; CPU generates INT0 interrupt and starts execution here when the
-    ; SID chipselect line drops low
+    ; SID chipselect line drops low.
     ;
-    ; The SID registers are stored in SRAM. The high byte, XH or r27 is global and
-    ; never modified. The following code writes the address bus to XL or r26, making
-    ; X a pointer to the right register in SRAM and then stores the data bus D0..D7
-    ; to that memory location.
+    ; The SID registers are stored in SRAM. The high byte, XH or r27 is global
+    ; and never modified. The following code writes the address bus to XL/r26,
+    ; making X a pointer to the right register in SRAM and then stores
+    ; the data bus D0..D7 to that memory location.
     ;
-    ; AVR finishes current instruction on irq then needs 3 cycles before execution.
-    ; In practice this means 4-6 cycles latency. Assume CS happens on rise of PHI2 + 80ns
-    ; and we are running at 32MHz, so a cycle takes 31.25 ns. This means that execution starts
-    ; here on rise PHI2 + 205-268ns. The number at the start of the comment below is the lower
-    ; bound (rounded to whole ns) when the instruction starts add 62.5ns to get the upper bound.
-    ; The second number is the number of clock cycles the instruction will take.
+    ; AVR finishes current instruction on irq then needs 3 cycles before
+    ; execution of the handler.  In practice this means 4-6 cycles latency.
+    ; Assume CS happens on rise of PHI2 + 80ns and we are running at 32MHz,
+    ; so a cycle takes 31.25 ns. This means that execution starts
+    ; here on rise PHI2 + 205-268ns. The number at the start of the comment
+    ; below is the lower bound (rounded to whole ns) when the
+    ; instruction starts add 62.5ns to get the upper bound.
+    ; The second number is the number of clock cycles for the instruction.
 
 #ifdef LAZY_JONES_FIX
-	in	r26,p_PINC	; 205 1 Read port C (PC0..PC4 = A0..A4, PC5 = D2, PC6 = reset)
-	in	r11,p_PIND	; 236 1 Read port D (PD0..PD7 = D0..D7, except PD2 which is CS)
-	sbic p_PINB,b5	; 268 1/2 If RW=0 (thus a write to sid) skip the RETI.
+	in	r26, p_PINC	; 205 1 Read port C
+				;   (PC0..PC4 = A0..A4, PC5 = D2, PC6 = reset)
+	in	r11, p_PIND	; 236 1 Read port D
+				;   (PD0..PD7 = D0..D7, except PD2 which is CS)
+	sbic	p_PINB,b5	; 268 1/2 If RW=0 (thus a write to sid)
+				;   skip the RETI.
 	reti			; 299 1 Ignore reads from the SID.
-	in	r12,p_SREG	; 330 1 Save AVR flags register SREG
-	bst	r26,b5		; 361 1 Load D2 into T flag
-	bld	r11,b2		; 393 1 Store T into bit 2, so r11 contains full D0..D7
-	andi r26,0x1f	; 424 1 Keep bits 0..4, so r26 contains A0..A4.
-	st	X,r11		; 455 2 Store read value from databus in correct SID register
-	out	p_SREG,r12	; 518 1 Restore AVR flags register
-	sbrs r11,b0		; 549 1/2 Skip the mov if D0=1
-	mov	r28,r26		; 580 1 Copy A0..A4 to r28/yl. This is for the Lazy Jones fix
-					;       Further checks performed outside IRQ handler.
+	in	r12, p_SREG	; 330 1 Save AVR flags register SREG
+	bst	r26, b5		; 361 1 Load D2 into T flag
+	bld	r11, b2		; 393 1 Store T into bit 2, so
+				;   r11 contains full D0..D7
+	andi 	r26, 0x1f	; 424 1 Keep bits 0..4, so r26 contains A0..A4.
+	st	X, r11		; 455 2 Store read value from databus
+				;   in correct SID register
+	out	p_SREG, r12	; 518 1 Restore AVR flags register
+	sbrs 	r11, b0		; 549 1/2 Skip the mov if D0=1
+	mov	r28, r26	; 580 1 Copy A0..A4 to r28/yl.
+				;   This is for the Lazy Jones fix
+				; Further checks performed outside IRQ handler.
 	reti			; 611 1
-#else
-#ifdef SWINKELS_20141027
-	in r26,p_PINC	; 205 1 Read port C (PC0..PC4 = A0..A4, PC5 = D2, PC6 = reset)
-	in r11,p_PIND	; 236 1 Read port D (PD0..PD7 = D0..D7, except PD2 which is CS)
-	in r12,p_SREG	; 268 1 Save AVR flags register SREG
-	bst r26,b5		; 299 1 Load D2 into T flag
-	bld r11,b2		; 330 1 Store T into bit 2, so r11 contains full D0..D7
-	andi r26,0x1f	; 361 1 Keep bits 0..4, so r26 contains A0..A4.
-	st X,r11		; 393 2 Store read value from databus in correct SID register
-	subi r26,0xe0	; 455 1 point to table of modified registers
-	sbrs r11,b0		; 486 1/2 If bit 0 set (gate bit), skip next st (Lazy Jones Fix)
-	st X,r26		; 518 1 mark register modified
-	out p_SREG,r12	; 549 1 Restore AVR flags register
+#elif defined(SWINKELS_20141027)
+	in r26, p_PINC		; 205 1 Read port C
+				;   (PC0..PC4 = A0..A4, PC5 = D2, PC6 = reset)
+	in r11, p_PIND		; 236 1 Read port D
+				;   (PD0..PD7 = D0..D7, except PD2 which is CS)
+	in r12 ,p_SREG		; 268 1 Save AVR flags register SREG
+	bst r26, b5		; 299 1 Load D2 into T flag
+	bld r11, b2		; 330 1 Store T into bit 2, so
+				;   r11 contains full D0..D7
+	andi r26, 0x1f		; 361 1 Keep bits 0..4, so r26 contains A0..A4.
+	st X, r11		; 393 2 Store read value from databus
+				;   in correct SID register
+	subi r26, 0xe0		; 455 1 point to table of modified registers
+	sbrs r11, b0		; 486 1/2 If bit 0 set (gate bit),
+				;   skip next st (Lazy Jones Fix)
+	st X, r26		; 518 1 mark register modified
+	out p_SREG, r12		; 549 1 Restore AVR flags register
 	reti			; 580 1
 #else
-	in r26,p_PINC	; 205 1 Read port C (PC0..PC4 = A0..A4, PC5 = D2, PC6 = reset)
-	in r11,p_PIND	; 236 1 Read port D (PD0..PD7 = D0..D7, except PD2 which is CS)
-	sbrc r11,b2;	; 268 1/2 Skip next jmp if CS low (redundant, irq means it is low)
+	in r26, p_PINC		; 205 1 Read port C
+				;   (PC0..PC4 = A0..A4, PC5 = D2, PC6 = reset)
+	in r11, p_PIND		; 236 1 Read port D
+				;   (PD0..PD7 = D0..D7, except PD2 which is CS)
+	sbrc r11, b2;		; 268 1/2 Skip next jmp if CS low
+				;   (redundant, irq means it is low)
 	rjmp no_cs		; 299 1 Get out of here if CS high
-	in r12,p_SREG	; 330 1 Save AVR flags register SREG
-	bst r26,b5		; 361 1 Load D2 into T flag
-	bld r11,b2		; 393 1 Store T into bit 2, so r11 contains full D0..D7
-	andi r26,0x1f	; 424 1 Keep bits 0..4, so r26 contains A0..A4.
-	st X,r11		; 455 2 Store read value from databus in correct SID register
-	out p_SREG,r12	; 518 1 Restore AVR flags register
+	in r12, p_SREG		; 330 1 Save AVR flags register SREG
+	bst r26, b5		; 361 1 Load D2 into T flag
+	bld r11, b2		; 393 1 Store T into bit 2,
+				;   so r11 contains full D0..D7
+	andi r26, 0x1f		; 424 1 Keep bits 0..4, so r26 contains A0..A4.
+	st X, r11		; 455 2 Store read value from databus
+				;    in correct SID register
+	out p_SREG, r12		; 518 1 Restore AVR flags register
 no_cs:
 	reti			; 549 1
 #endif
-#endif
 	
-	; Note that in a computer with a 6502 styled bus, you are expected to read the bus when PHI2
-	; falls. Due to interrupt latency this is next to impossible in a microcontroller, so the
-	; triggering on PHI2 and depending on the correct latency is a necessary alternatice.
-	; The MOS 6510 datasheet specifies the moment the data bus is stable in the value T_MDS.
-	; It specifies a typical 150ns and max 200ns. This means that the above code is compliant
-	; with 6510 timing.
+	; Note that in a computer with a 6502 styled bus, you are expected
+	; to read the bus when PHI2 falls.  Due to interrupt latency this is
+	; next to impossible in a microcontroller, so the triggering on PHI2
+	; and depending on the correct latency is a necessary alternative.
+	; The MOS 6510 datasheet specifies the moment the data bus is stable
+	; in the value T_MDS. It specifies a typical 150ns and max 200ns.
+	;This means that the above code is compliant with 6510 timing.
 
-; Explicitely set the current address to make the assembler complain if above code
-; is modified and increases in length.
+; Explicitly set the current address to make the assembler complain if
+; above code is modified and increases in length.
+
 .org 0x01c,0x00
 
 irq_timer0_compa:
-    ; The timer 0 compare match A interrupt for every sample. It writes the computed
-    ; sample in sample_l/sample_h to the PWN registers of timer 1, which means the audio
-    ; output pins PB1/PB2 are updated.
+    ; The timer 0 compare match A interrupt for every sample.
+    ; It writes the computed sample in sample_l/sample_h to
+    ; the PWN registers of timer 1, which means the audio output pins PB1/PB2
+    ; are updated.
     ;
-    ; NOTE: This interrupt service routine is problematic: Because it disables interrupts
-    ; while it runs, if a chipselect occurs while it is running, the SwinSID will handle the
+    ; NOTE: This interrupt service routine is problematic:
+    ; because it disables interrupts while it runs, if a chipselect occurs
+    ; while it is running, the SwinSID will handle the
     ; chipselect interrupt way too late and will read garbage from the bus.
+    ; GA: but it starts with SEI!
 	sei
-	rjmp nexti1			; Looks like a NOP?
+	rjmp nexti1		; Looks like a NOP?
 nexti1:
 	push r23
-	lds r23,sample_h	; Get high byte of sample
-	sts OCR1AL,r23		; Write to output compare register A
-	lds r23,sample_l	; Get low byte of sample
-	sts OCR1BL,r23		; Write to output compare register B
-	ldi r23,0xff
-	sts sample_written,r23 ; Tell main loop to generate new sample
+	lds r23, sample_h	; Get high byte of sample
+	sts OCR1AL, r23		; Write to output compare register A
+	lds r23, sample_l	; Get low byte of sample
+	sts OCR1BL, r23		; Write to output compare register B
+	ldi r23, 0xff
+	sts sample_written, r23 ; Tell main loop to generate new sample
 	pop r23
 	reti
 
@@ -354,22 +376,24 @@ osc_nosync\v :
 	lds r15,ctrl\v
 #endif
 	sts previous_ctrl\v ,r15
-	mov r23,r25
-	andi r23,0xf0		; Was there a waveform enabled in previous sample?
-    brne wave_on\v		; Yes then skip.
-	mov r23,r15			; ??? why temp move to r23?
-	andi r23,0x0f		; If no, then waveform bits in current sample don't matter
-	mov r15,r23			; move back to r15
+	mov r23, r25
+	andi r23, 0xf0		; Was there a waveform enabled
+				;  in previous sample?
+	brne wave_on\v		; Yes then skip.
+	mov r23, r15		; ??? why temp move to r23?
+	andi r23, 0x0f		; If no, then waveform bits in current sample
+				;   don't matter
+	mov r15, r23		; move back to r15
 wave_on\v :
-	eor	r25,r15			; Compare previous ctrl with current ctrl
-	bst	r25,b0			; Has the gate bit been changed?
+	eor	r25, r15	; Compare previous ctrl with current ctrl
+	bst	r25, b0		; Has the gate bit been changed?
 #ifdef LAZY_JONES_FIX
 	brts gate_changed\v	; Yes, then skip
 	; Gate bit not changed
-	cpi r28,(7*(\v - 1) + 4)	; Was ctrl\v the last register written?
-	brne gate_unchanged\v ; No, then skip gate handling
-	clr r28				; Clear r28/yl
-	bst r15,b0			; Was the gate turned on?
+	cpi r28,(7*(\v - 1) + 4); Was ctrl\v the last register written?
+	brne gate_unchanged\v 	; No, then skip gate handling
+	clr r28			; Clear r28/yl
+	bst r15, b0		; Was the gate turned on?
 #endif
 #ifdef SWINKELS_20141027
 	brts gate_changed\v	; Yes, then skip
@@ -690,24 +714,27 @@ waveval_loaded\v :
 	;
 	; ... but mathematically this isn't the same as:
 	;
-	; r23:=(r23+r22+r21) div 4 - 128 (and you would rather like to divide by 3)
-	add r23,r22
+	; r23:=(r23+r22+r21) div 4 - 128
+	;  (and you would rather like to divide by 3)
+
+	add r23, r22
 	ror r23
-	add r23,r21
+	add r23, r21
 	ror r23
-	subi r23,0x80
+	subi r23, 0x80
 waveval_ready\v :
-	 sbrc r15,b2				; ring modulation enabled?
-	 rjmp ringmodulation\v		; this rjmp is skipped if not enabled
+	sbrc r15, b2		; ring modulation enabled?
+	 rjmp ringmodulation\v	; this rjmp is skipped if not enabled
 waveval_postring\v :
-	mulsu r23,r18				; Multiply with envelope value (still in r18)
+	mulsu r23, r18		; Multiply with envelope value (still in r18)
+
 	; Divide by 4:
 	asr r1
 	ror r0
 	asr r1
 	ror r0
 
-	clr r7						; ??? r7 is not used
+	clr r7			; ??? r7 is not used
 .endm
 
 
@@ -718,20 +745,20 @@ waveval_postring\v :
 ;****************************************************************************
 	
 mixing_loop:
-	; Output of voices that need to be filtered will be accumulated in r2/r3
+	; Output of filtered voices will be accumulated in r2/r3.
 	clr r2
 	clr r3
-	; Output of voices that doesn't need to be filtered will be accumulated in r4/r5
+	; Output of unfiltered voices will be accumulated in r4/r5.
 	clr r4
 	clr r5
 
-	;************************************************************************
+	;**********************************************************************
 	; Voice 3
-	;************************************************************************
+	;**********************************************************************
 	gen_voice 3 2
 
-	lds r23,reson
-	sbrs r23,b2					; Is voice 3 filtered?
+	lds r23, reson
+	sbrs r23, b2					; Is voice 3 filtered?
 	rjmp not_filtered3			; This jump is skipped if filtered
 	add r2,r0					; Add to voice data to be filtered
 	adc r3,r1					; Add to voice data to be filtered
@@ -928,6 +955,8 @@ reset:
 
 	; Set timer 1 in fast PWM 8-bit mode, enable PWM on PB1/PB2 and set the
 	; clock divider to 1 (so timer1 counts at 32MHz).
+	;  TCCR1A = COM1A1 | COM1B1 | WGM10
+	;  TCRR1B = WGM12 | CS0
 	ldi r23,0xa1
 	sts TCCR1A,r23
 	ldi r23,0x09
@@ -953,8 +982,10 @@ reset:
 
 	; Initialize timer 0 (timer interrupt)
 	; The interrupt is triggered 32000000 / 8 / 96 = 41667 times per second
-	; Set "clear on compare match" mode, disable PWM
+	; Set "clear on compare match" (CTC) mode, disable PWM
 	; Timer clock source = CLKIO/8
+	;  TCCR0A = WGM01
+	;  TCCR0B = CS01
 	ldi r23,0x02
 	out p_TCCR0A,r23
 	ldi r23,0x02
@@ -974,11 +1005,11 @@ reset:
 	sts freqh1,r18
 
 	; INT0 (chip select) triggers interrupt on falling edge
-	ldi r23,0x02
-	sts EICRA,r23
+	ldi r23, 0x02		; ISC01 - falling edge of INT0 = PD2.
+	sts EICRA, r23
 	; Enable external interrupt INT0 (chip select)
-	ldi r23,0x01
-	out p_EIMSK,r23
+	ldi r23, 0x01		; Enabke INT0
+	out p_EIMSK, r23
 
 	; Set r27/xh (global register) to point to SID registers in SRAM
 	ldi r27,hi8(freql1)
