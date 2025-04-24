@@ -57,12 +57,14 @@ b7	= 0x07
 ;
 ; GLOBAL REGISTERS
 ;
-; R11    : Used by CS irq handler to temporary store data bus
-; R12    : Used by CS irq handler as temp register
-; R20    : Passes sync from previous voice.
-; R26/XL : Used by CS irq handler to create pointer to SID register being written.
-; R27/XH : Fixed to SRAM area where SID registers are stored.
-; R28/YL : CS irq handler stores R26 into this if D0=1. Purpose unknown. 
+; R2/R3   : Accumulated output of filtered voices
+; R11     : Used by CS irq handler to temporary store data bus
+; R12     : Used by CS irq handler as temp register
+; R20     : Passes sync from previous voice.
+; R24/R25 : Accumulated output of unfiltered voices
+; R26/XL  : Used by CS irq handler to create pointer to SID register being written.
+; R27/XH  : Fixed to SRAM area where SID registers are stored.
+; R28/YL  : CS irq handler stores R26 into this if D0=1. Purpose unknown. 
 
 .org 0x000,0xff
 
@@ -209,27 +211,6 @@ underflow\@:
 no_overflow\@:
 .endm
 
-#ifdef TWEAKS_X
-.macro satadds_crazy a b
-	satadds \a, \b
-.endm
-#else
-; GA: not so crazy, ldi requires r16 or hisher.
-.macro satadds_crazy a b
-	add  \a, \b
-	mov  r23, \a		; ??? Why just why move to r23 and back later?
-	brvc no_overflow\@
-	brpl underflow\@
-	; Overflow
-	ldi  r23, 127
-	rjmp no_overflow\@
-underflow\@:
-	ldi r23, -128
-no_overflow\@:
-	mov  \a, r23
-.endm
-#endif
-
 ;****************************************************************************
 ; Macro for 16-bit signed saturated addition
 ; This macro adds the number bh:bl to ah:al
@@ -251,29 +232,6 @@ underflow\@:
 	ldi  \ah, -128
 no_overflow\@:
 .endm
-
-#ifdef TWEAKS_X
-.macro satadds16_crazy ah al bh bl
-	satadds16 \ah, \al, \bh, \bl
-.endm
-#else
-; Crazy version with same functionality that uses r23 as temp register
-; GA: not so crazy, ldi requires r16 or hisher.
-
-.macro satadds16_crazy ah al bh bl
-	add  \al, \bl
-	adc  \ah, \bh
-	mov  r23, \ah		; ??? Why just why move to r23 and back later?
-	brvc no_overflow\@
-	brpl underflow\@
-	ldi  r23, 127
-	rjmp no_overflow\@
-underflow\@:
-	ldi  r23, -128
-no_overflow\@:
-	mov  \ah, r23
-.endm
-#endif
 
 ;****************************************************************************
 ; Macro for 8-bit signed saturated subtractionm
@@ -391,12 +349,12 @@ osc_nosync\v :
 #endif
 	lds r21, ad\v
 	lds r22, sr\v
-	lds r25, previous_ctrl\v
+	lds r16, previous_ctrl\v
 #ifdef SWINKELS_20141027
 	lds r15, ctrl\v
 #endif
 	sts previous_ctrl\v, r15
-	mov r23, r25
+	mov r23, r16
 	andi r23, 0xf0		; Was there a waveform enabled
 				;  in previous sample?
 	brne wave_on\v		; Yes then skip.
@@ -405,8 +363,8 @@ osc_nosync\v :
 				;   don't matter
 	mov r15, r23		; move back to r15
 wave_on\v :
-	eor	r25, r15	; Compare previous ctrl with current ctrl
-	bst	r25, b0		; Has the gate bit been changed?
+	eor	r16, r15	; Compare previous ctrl with current ctrl
+	bst	r16, b0		; Has the gate bit been changed?
 #ifdef LAZY_JONES_FIX
 	brts gate_changed\v	; Yes, then skip
 	; Gate bit not changed
@@ -647,24 +605,6 @@ no_noisewave\v :
 build_wavetable_ptrh\v :
 	ldi r31, 0x10		; base address of wavetable data
 	rjmp build_wavetable_ptrl\v
-#ifndef LAZY_JONES_FIX
-	; Dead code, purpose unknown
-	mov r24, r16
-	sbrc r16, 5
-	add r13, r13
-	sbrc r16, 6
-	com r13
-	lds r23, poty + \v - 1	; Very weird, these are the read-only registers
-				;   in the SID
-	add r13, r23
-	andi r16, 0x0f	; 15
-	add r16, r31
-	mov r23, r15
-	swap r23
-	andi r23, 0x0f	; 15
-	add r31, r23
-	rjmp wave_ptr_ready\v
-#endif
 no_waveform_selected\v :
 	lds r23, freqh\v
 	sts waveform_val\v, r23
@@ -676,18 +616,18 @@ build_wavetable_ptrl\v :
 	andi r23, 0x0f			; waveform mask into low nibble
 	breq no_waveform_selected\v
 	add r31, r23			; high byte now points to correct wave table
-	mov r16, r31			; Save r31
+;	mov r16, r31			; Save r31
 wave_ptr_ready\v:
 	bst r23, b2			; Check if pulse is selected
 	brtc no_pulse_selected\v
 	; Get the pulse width. Least significant 4 bits are thrown away.
 	lds	r19, pwl\v
 	andi r19, 0xf0			; Mask middle 4 bits of pulse width
-	lds r25, pwh\v
-	andi r25, 0x0f			; Mask high 4 bits of pulse widt
-	add r25, r19			; Add together
-	swap r25			; Swap nibbles for pulse width.
-	mov r19, r25
+	lds r16, pwh\v
+	andi r16, 0x0f			; Mask high 4 bits of pulse widt
+	add r16, r19			; Add together
+	swap r16			; Swap nibbles for pulse width.
+	mov r19, r16
 	mov r30, r14			; R14 still contains accu3h
 					;   (waveform progress value)
 					;   that was loaded up from here.
@@ -696,7 +636,7 @@ wave_ptr_ready\v:
 	brcc pwm_higha\v
 	clr r22				; 0 when beyond pulse width threshold
 pwm_higha\v :
-	mov r31, r16			; ??? r31 is restored, but unmodified!
+;	mov r31, r16			; ??? r31 is restored, but unmodified!
 	mov r30, r13			; Even weirder, this is the saved value
 					;   from after the first add
 					;   to the accumulator far above.
@@ -710,7 +650,7 @@ no_pulse_selected\v :
 	mov r30, r14	; R14 still contains accu3h (waveform progress value)
 			; that was loaded quite a bit up from here.
 	lpm r22, Z	; Get waveform data
-	mov r31, r16	; ??? r31 is restored, but it wasn't modified!
+;	mov r31, r16	; ??? r31 is restored, but it wasn't modified!
 	mov r30, r13	; ??? this is the saved value from after the first
 			; add to the accumulator far above.
 	lpm r21, Z
@@ -776,9 +716,9 @@ mixing_loop:
 	; Output of filtered voices will be accumulated in r2/r3.
 	clr r2
 	clr r3
-	; Output of unfiltered voices will be accumulated in r4/r5.
-	clr r4
-	clr r5
+	; Output of unfiltered voices will be accumulated in r24/r25.
+	clr r24
+	clr r25
 
 	;**********************************************************************
 	; Voice 3
@@ -796,8 +736,8 @@ not_filtered3:
 	lds r23, vol_fil
 	sbrc r23, b7
 	rjmp voice_muted3
-	add r4, r0		; Add to voice data not to be filtered
-	adc r5, r1		; Add to voice data not to be filtered
+	add r24, r0		; Add to voice data not to be filtered
+	adc r25, r1		; Add to voice data not to be filtered
 voice_muted3:
 
 	;************************************************************************
@@ -813,8 +753,8 @@ voice_muted3:
 	clr r0
 	clr r1
 not_filtered1:
-	add r4, r0		; Add to voice data not to be filtered
-	adc r5, r1		; Add to voice data not to be filtered
+	add r24, r0		; Add to voice data not to be filtered
+	adc r25, r1		; Add to voice data not to be filtered
 
 	;**********************************************************************
 	; Voice 2
@@ -829,8 +769,8 @@ not_filtered1:
 	clr r0
 	clr r1
 not_filtered2:
-	add r4, r0		; Add to voice data not to be filtered
-	adc r5, r1		; Add to voice data not to be filtered
+	add r24, r0		; Add to voice data not to be filtered
+	adc r25, r1		; Add to voice data not to be filtered
 
 	;************************************************************************
 	; Filter
@@ -851,11 +791,8 @@ not_filtered2:
 
 	lds r23, reson
 	ori r23, 0x0f		; Bit 0..3 set, filter resonance in bit 4..7
-#ifndef TWEAKS
-	mov r24, r23
-#endif
-	ldi r25, 150		; Multiply by 150
-	mul r23, r25
+	ldi r16, 150		; Multiply by 150
+	mul r23, r16
 	mov r23, r1		; Get high byte
 	com r23			; Subtract from 255 (inverts)
 	lds r19, filter_acc_band_h
@@ -890,7 +827,7 @@ filterh_nonzero:
 	lds r21, filter_acc_band_l
 	lds r22, filter_acc_band_h
 	satadds16 r22 r21, r1 r0	; Macro for saturated addition
-					;   r5:r4 := r22:r21 + r1:r0
+					;   r25:r24 := r22:r21 + r1:r0
 	sts filter_acc_band_l, r21
 	sts filter_acc_band_h, r22
 
@@ -898,7 +835,7 @@ filterh_nonzero:
 	lds r17, filter_acc_low_l
 	lds r18, filter_acc_low_h
 	satadds16 r18 r17, r1 r0	; Macro for saturated addition
-					;     r5:r4 := r18:r17 + r1:r0
+					;     r25:r24 := r18:r17 + r1:r0
 	sts filter_acc_low_l, r17
 	sts filter_acc_low_h, r18
 	
@@ -908,21 +845,21 @@ filterh_nonzero:
 
 	; Add low frequency component
 
-	satsubs16 r5 r4, r18 r17	; Macro for saturated substraction
-					;   r5:r4 := r5:r4 - r18:r17
+	satsubs16 r25 r24, r18 r17	; Macro for saturated substraction
+					;   r25:r24 := r25:r24 - r18:r17
 no_low_pass:
 	sbrs r2, b5			; Band pass enabled?
 	rjmp no_band_pass		; Jump if low pass not enabled
 
 	; Add band frequency component
 
-	satadds16_crazy r5 r4, r22 r21	; Macro for saturated addition
-					;   r5:r4 := r5:r4 + r22:r21
+	satadds16 r25 r24, r22 r21	; Macro for saturated addition
+					;   r25:r24 := r25:r24 + r22:r21
 no_band_pass:
 	 sbrs r2, b6			; High pass enabled?
 	 rjmp no_high_pass		; Jump if low pass not enabled
 	; Add high frequency component
-	satadds_crazy r5, r9		; Macro for signed saturated addition
+	satadds r25, r9			; Macro for signed saturated addition
 no_high_pass:
 
 	;**********************************************************************
@@ -930,14 +867,14 @@ no_high_pass:
 	;**********************************************************************
 	lds r23, vol_fil
 	andi r23, 0x0f			; Mask master volume
-	lds r25, previous_volume
+	lds r16, previous_volume
 	lds r19, volume_change_progress	; Actual linear volume
-	cp r23, r25			; Did the volume change?
+	cp r23, r16			; Did the volume change?
 	breq volume_unchanged
 	; Volume has changed. When the volume changed, a bias is added to the output
 	; sample for 255 cycles, in order to allow digi playback.
-	mov r25, r23
-	sts previous_volume, r25
+	mov r16, r23
+	sts previous_volume, r16
 	ldi r19, 255		; If the volume changes, for 255 samples,
 				;  there is a bias.
 volume_unchanged:
@@ -946,20 +883,20 @@ volume_unchanged:
 	; Add the bias.
 	subi r19,  0x01
 	sts volume_change_progress, r19
-	subi r25,  8		; Make it signed Range becomes -8 to 7
-	lsl r25			; Multiply by 8 to get the sample at desired volume
-	lsl r25
-	lsl r25
+	subi r16,  8		; Make it signed Range becomes -8 to 7
+	lsl r16			; Multiply by 8 to get the sample at desired volume
+	lsl r16
+	lsl r16
 	; Add to the current sample
-	satadds r25,  r5	; Macro for signed saturated addition
-	mov r5,  r25
+	satadds r16,  r25	; Macro for signed saturated addition
+	mov r25,  r16
 	rjmp sample_not_written
 zero_sample:
-	clr r5
-	clr r4
+	clr r25
+	clr r24
 	rjmp sample_not_written
 volume_change_complete:
-	tst r25
+	tst r16
 	breq zero_sample
 	; Wait until the last sample has been written to PWM
 sample_not_written:
@@ -978,9 +915,9 @@ skip_sleep:
 	breq sample_not_written	; If zero then loop
 #endif
 	ldi r23, 0x80
-	eor r5, r23
-	sts sample_h, r5
-	sts sample_l, r4
+	eor r25, r23
+	sts sample_h, r25
+	sts sample_l, r24
 	clr r23
 	sts sample_written, r23 ; Reset sample written flag
 	rjmp mixing_loop
