@@ -8,7 +8,7 @@
 ; Lazy Jones fix developed by Máté "CodeKiller" Sebök
 ;
 ; Source code reconstruction by Daniël Mantione
-; Then mangled to make readable by Giles Atkinson.
+; Then mangled to make readable and modified by Giles Atkinson.
 ;
 ; Set your editor tab size to 8.
 ;
@@ -166,6 +166,7 @@ no_cs:
 
 .org 0x01c,0x00
 
+#ifndef FREE_RUN
 irq_timer0_compa:
     ; The timer 0 compare match A interrupt for every sample.
     ; It writes the computed sample in sample_l/sample_h to
@@ -178,11 +179,7 @@ irq_timer0_compa:
     ; chipselect interrupt way too late and will read garbage from the bus.
     ; GA: but it starts with SEI!
 	sei
-#ifdef TWEAKS
 	nop  			; One-cycle to enable
-#else
-	rjmp nexti1		; Looks like a NOP?
-#endif
 nexti1:
 	push r23
 	lds r23, sample_h	; Get high byte of sample
@@ -193,6 +190,7 @@ nexti1:
 	sts sample_written, r23 ; Tell main loop to generate new sample
 	pop r23
 	reti
+#endif
 
 ;****************************************************************************
 ; Macro for 8-bit signed saturated addition
@@ -303,6 +301,7 @@ osc_nosync\v :
 	; Compute accu3:=accu3+24*freq
 	; r20 will become non-zero when accu3 overflows.
 	;
+#ifdef MIX
 	; Freq is added 24 times, because SID runs at 1MHz,
 	; while our sample rate is 1/24 MHz (41116 Hz),
 	; so we have to add 24 times to replicate the SID
@@ -338,7 +337,42 @@ osc_nosync\v :
 	sts  accu\v\()m, r13
 	sts  accu\v\()h, r14
 	mov  r13, r23   ; ??? Saved high byte before first add
+#else
+	lds  r14, freqh\v
+	ldi  r23, 24
+	mul  r14, r23		; Muliply high byte by 24
+	mov  r22, r1		; Save result
+	mov  r21, r0
+	lds  r13, freql\v
+	mul  r13, r23		; Muliply low byte by 24
+	add  r21, r1            ; Add hi(result) to lo(first_result)
+	clr  r19		; Propagate carry to hi(first_result)
+	adc  r22, r19
+	lds  r14, accu\v\()l	; Add lo(result) to accuXl
+	add  r14, r0
+	adc  r21, r19		; Propagate carry to lo(first_result)
+	sts  accu\v\()l, r14	; Save new accXl
+	lds  r14, accu\v\()m	; Add lo(first_result) to accuXm.
+	add  r14, r21
+	adc  r22, r19		; Propagate carry to hi(first_result)
+	sts  accu\v\()m, r14	; Save new accXm
+	lds  r14, accu\v\()h	; Add hi(first_result) to accuXh.
+	clr  r20
+	add  r14, r22
+	rol  r20		; Picks up carry bit,
+	sts  accu\v\()h, r14
 
+#ifdef MIX_LIKE
+	; Weird stuff ...
+	; The original code multiplied by 12 and added it twice, saving
+	; the high byte of the phase accumulator in r13 after the first
+	; addition.  It is then given twice the weight of the final high byte
+	; in sample generation.  Since it appears to be nonsense ...
+	mov  r13, r14
+;	rol  r22
+;	sub  r13, r22
+#endif
+#endif
 	;**********************************************************************
 	; ADSR
 	;**********************************************************************
@@ -536,7 +570,6 @@ store_progress_end_adsr\v :
 	sts envelope_val\v, r18	; Store adr_progress after modification
 end_adsr\v :
 
-
 	;**********************************************************************
 	; Waveform
 	;**********************************************************************
@@ -613,56 +646,53 @@ no_waveform_selected\v :
 build_wavetable_ptrl\v :
 	mov r23, r15
 	swap r23
-	andi r23, 0x0f			; waveform mask into low nibble
+	andi r23, 0x0f		; waveform mask into low nibble
 	breq no_waveform_selected\v
-	add r31, r23			; high byte now points to correct wave table
-;	mov r16, r31			; Save r31
+	add r31, r23		; high byte now points to correct wave table
 wave_ptr_ready\v:
-	bst r23, b2			; Check if pulse is selected
+	bst r23, b2		; Check if pulse is selected
 	brtc no_pulse_selected\v
+
 	; Get the pulse width. Least significant 4 bits are thrown away.
+
 	lds	r19, pwl\v
-	andi r19, 0xf0			; Mask middle 4 bits of pulse width
+	andi r19, 0xf0		; Mask middle 4 bits of pulse width.
 	lds r16, pwh\v
-	andi r16, 0x0f			; Mask high 4 bits of pulse widt
-	add r16, r19			; Add together
-	swap r16			; Swap nibbles for pulse width.
-	mov r19, r16
-	mov r30, r14			; R14 still contains accu3h
-					;   (waveform progress value)
-					;   that was loaded up from here.
-	lpm r22, Z			; Get waveform data
-	cp r30, r19			; Pulse width threshold exceeded?
+	andi r16, 0x0f		; Mask high 4 bits of pulse width.
+	add r16, r19		; Add together
+	swap r16		; Swap nibbles for pulse width.
+;	mov r19, r16
+	mov r30, r14		; R14 still contains accu3h
+				;   (waveform progress value)
+				;   that was loaded far up from here.
+	lpm r22, Z		; Get waveform data
+;	cp r30, r19		; Pulse width threshold exceeded?
+	cp r30, r16		; Pulse width threshold exceeded?
 	brcc pwm_higha\v
-	clr r22				; 0 when beyond pulse width threshold
+	clr r22			; 0 when beyond pulse width threshold
 pwm_higha\v :
-;	mov r31, r16			; ??? r31 is restored, but unmodified!
-	mov r30, r13			; Even weirder, this is the saved value
-					;   from after the first add
-					;   to the accumulator far above.
-	lpm r21, Z			; Get waveform data again
-	cp r30, r19			; Pulse width threshold exceeded?
+#ifdef MIX
+	mov r30, r13		; Even weirder, this is the saved value
+				;   from after the first add
+				;   to the accumulator far above.
+	lpm r21, Z		; Get waveform data again
+;	cp r30, r19		; Pulse width threshold exceeded?
+	cp r30, r16		; Pulse width threshold exceeded?
 	brcc pwm_highb\v
 	clr r21
+#endif
 pwm_highb\v :
 	rjmp waveval_loaded\v
 no_pulse_selected\v :
 	mov r30, r14	; R14 still contains accu3h (waveform progress value)
 			; that was loaded quite a bit up from here.
 	lpm r22, Z	; Get waveform data
-;	mov r31, r16	; ??? r31 is restored, but it wasn't modified!
+#ifdef MIX
 	mov r30, r13	; ??? this is the saved value from after the first
 			; add to the accumulator far above.
 	lpm r21, Z
-	rjmp waveval_loaded\v
-#ifndef LAZY_JONES_FIX
-	; Dead code, purpose unknown
-	subi r21, 128
-	subi r22, 128
-	satadds r21, r22
-	mov r23, r21
-	rjmp waveval_ready\v
 #endif
+	rjmp waveval_loaded\v
 
 ringmodulation\v :
 	; Ring modulate voice with buddy voice
@@ -673,6 +703,7 @@ ringmodulation\v :
 	com r23
 	rjmp waveval_postring\v
 waveval_loaded\v :
+#ifdef MIX
 	lds r23, waveform_val\v		; save last waveform value
 	sts waveform_val\v, r22		; store new waveform value
 
@@ -683,11 +714,15 @@ waveval_loaded\v :
 	;
 	; r23 := (r23 + r22 + r21) div 4 - 128
 	;  (and you would rather like to divide by 3)
+	; But why average at all??  The -128 makes the output signed.
 
 	add r23, r22
 	ror r23
 	add r23, r21
 	ror r23
+#else
+	mov r23, r22		; FIX ME
+#endif
 	subi r23, 0x80
 waveval_ready\v :
 	sbrc r15, b2		; ring modulation enabled?
@@ -700,9 +735,6 @@ waveval_postring\v :
 	ror r0
 	asr r1
 	ror r0
-#ifndef TWEAKS
-	clr r7			; ??? r7 is not used
-#endif
 .endm
 
 
@@ -865,6 +897,7 @@ no_high_pass:
 	;**********************************************************************
 	; Master volume
 	;**********************************************************************
+
 	lds r23, vol_fil
 	andi r23, 0x0f			; Mask master volume
 	lds r16, previous_volume
@@ -884,7 +917,7 @@ volume_unchanged:
 	subi r19,  0x01
 	sts volume_change_progress, r19
 	subi r16,  8		; Make it signed Range becomes -8 to 7
-	lsl r16			; Multiply by 8 to get the sample at desired volume
+	lsl r16			; Multiply by 8 to get the desired volume
 	lsl r16
 	lsl r16
 	; Add to the current sample
@@ -898,8 +931,16 @@ zero_sample:
 volume_change_complete:
 	tst r16
 	breq zero_sample
+
 	; Wait until the last sample has been written to PWM
+
+	ldi r23, 0x80
+	eor r25, r23		; Signed to unsigned conversion.
 sample_not_written:
+#ifdef FREE_RUN
+	sts OCR1AL, r25		; Write to output compare register A (Hi)
+	sts OCR1BL, r24		; Write to output compare register B (Low)
+#else
 #ifdef SLEEP
 	cli			; Block interrupts
 	lds r23, sample_written
@@ -914,12 +955,11 @@ skip_sleep:
 	tst r23			; Zero?
 	breq sample_not_written	; If zero then loop
 #endif
-	ldi r23, 0x80
-	eor r25, r23
 	sts sample_h, r25
 	sts sample_l, r24
 	clr r23
 	sts sample_written, r23 ; Reset sample written flag
+#endif
 	rjmp mixing_loop
 
 ;*****************************************************************************
@@ -970,6 +1010,13 @@ reset:
 	ldi r23, 0x06
 	out p_DDRB, r23
 
+#ifdef FREE_RUN
+	; Initialize timer 2 (microsecond counter)
+
+	ldi r23, 0x03		; CS21 | CS20 - divide system clock by 32.
+	sts TCCR2B, r23
+	out p_TCCR0A, r23
+#else
 	; Initialize timer 0 (timer interrupt)
 	; The interrupt is triggered 32000000 / 8 / 96 = 41667 times per second
 	; Set "clear on compare match" (CTC) mode, disable PWM
@@ -992,6 +1039,7 @@ reset:
 	; Enable timer 0 output compare match A interrupt
 	ldi r23, 0x02
 	sts TIMSK0, r23
+#endif
 
 	; Set voice 1 to 1137.3Hz (between C#6 and D6?)
 	; 19081 * 1000000 / 16777216 = 1137.3
@@ -1065,20 +1113,19 @@ reset:
 	sts vol_fil, r23
 	
 	; Disable the filter
-	clr r23
-	sts reson, r23
+	clr r0
+	sts reson, r0
 
 	; Initialize the filter accumulators
-	sts filter_acc_low_h, r23
-	sts filter_acc_low_l, r23
-	sts filter_acc_band_h, r23
-	sts filter_acc_band_l, r23
+	sts filter_acc_low_h, r0
+	sts filter_acc_low_l, r0
+	sts filter_acc_band_h, r0
+	sts filter_acc_band_l, r0
 	
 	; Initialize unused registers to 0
-	clr r23
-	sts empty1d, r23
-	sts empty1e, r23
-	sts empty1f, r23
+	sts empty1d, r0
+	sts empty1e, r0
+	sts empty1f, r0
 	
 	; Initialize seeds for random generator for noise
 	ldi r23, 0x29
@@ -1091,6 +1138,9 @@ reset:
 	sts seed_a3, r23
 	sts seed_b3, r23
 	
+#ifdef FREE_RUN
+	sts TCNT2, r0		; Restart uS counter.
+#endif
 	; Enable interrupts and start main loop
 	sei
 	rjmp mixing_loop
