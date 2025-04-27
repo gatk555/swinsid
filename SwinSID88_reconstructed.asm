@@ -212,12 +212,6 @@ no_overflow\@:
 ;****************************************************************************
 ; Macro for 16-bit signed saturated addition
 ; This macro adds the number bh:bl to ah:al
-; 
-; The implementation of this is broken, because in case of overflow, the low
-; byte is left unmodified. It might be on purpose, because the 6581 SID
-; filter is known to behave weird in case of saturation, but I seriously
-; doubt it because the SID filter is an analog circuit and does not
-; behave like an ignored low byte. Most likely it is an unintentional bug.
 ;****************************************************************************
 .macro satadds16 ah al bh bl
 	add  \al, \bl
@@ -225,9 +219,11 @@ no_overflow\@:
 	brvc no_overflow\@
 	brpl underflow\@
 	ldi  \ah, 127
+	mov  \al, \ah
 	rjmp no_overflow\@
 underflow\@:
 	ldi  \ah, -128
+	mov  \al, \ah
 no_overflow\@:
 .endm
 
@@ -239,8 +235,7 @@ no_overflow\@:
 	sub  \a, \b
 	brvc no_overflow\@
 	brpl underflow\@
-	; Overflow
-	ldi  \a, 127
+	ldi  \a, 127		; Overflow
 	rjmp no_overflow\@
 underflow\@:
 	ldi  \a, -128
@@ -250,25 +245,19 @@ no_overflow\@:
 ;****************************************************************************
 ; Macro for 16-bit signed saturated subtraction
 ; This macro subtracts the number bh:bl from ah:al
-; 
-; The implementation of this is broken, because in case of overflow, the low
-; byte is left unmodified. It might be on purpose, because the 6581 SID
-; filter is known to behave weird in case of saturation, but I seriously
-; doubt it because the SID filter is an analog circuit and does not
-; behave like an ignored low byte. Most likely it is an unintentional bug.
 ;****************************************************************************
 .macro satsubs16 ah al bh bl
 	sub  \al, \bl
 	sbc  \ah, \bh
-	mov  r23,\ah		; ??? Why just why move to r23 and back later?
 	brvc no_overflow\@
 	brpl underflow\@
-	ldi  r23, 127
+	ldi  \ah, 127		; Overflow
+	mov  \al, \ah
 	rjmp no_overflow\@
 underflow\@:
-	ldi  r23, -128
+	ldi  \ah, -128
+	mov  \al, \ah
 no_overflow\@:
-	mov  \ah, r23			; Move back to r5.
 .endm
 
 ;****************************************************************************
@@ -279,6 +268,9 @@ no_overflow\@:
 ;
 ; Example: genvoice 3 2
 ; ... generates a sample for voice 3 its buddy is voice 2.
+;
+; Output in r1/r0.
+;****************************************************************************
 
 .macro gen_voice v b
 	;**********************************************************************
@@ -300,44 +292,7 @@ osc_nosync\v :
 
 	; Compute accu3:=accu3+24*freq
 	; r20 will become non-zero when accu3 overflows.
-	;
-#ifdef MIX
-	; Freq is added 24 times, because SID runs at 1MHz,
-	; while our sample rate is 1/24 MHz (41116 Hz),
-	; so we have to add 24 times to replicate the SID
-	; oscillator behaviour.
-	;
-	; First step: r22:r21 = freqh3 * 12 + hi8(freql3 * 12)
-	;             r0 = lo8(freql3 * 12)
-	lds  r14, freqh\v
-	lds  r13, freql\v
-	clr  r19
-	ldi  r23, 12
-	mul  r14, r23
-	mov  r22, r1
-	mov  r21, r0
-	mul  r13, r23
-	add  r21, r1
-	adc  r22, r19
-	; Second step: Add r22:r21:r0 twice to accumulator
-	lds  r19, accu\v\()l
-	lds  r13, accu\v\()m
-	lds  r14, accu\v\()h
-	clr  r20
-	add  r19,r0
-	adc  r13,r21
-	adc  r14,r22
-	rol  r20	; Picks up carry bit,
-	mov  r23, r14   ; ??? Save high byte before first add
-	add  r19, r0
-	adc  r13, r21
-	adc  r14, r22
-	rol  r20	; Has both carry bits, passed to next voice.
-	sts  accu\v\()l, r19
-	sts  accu\v\()m, r13
-	sts  accu\v\()h, r14
-	mov  r13, r23   ; ??? Saved high byte before first add
-#else
+
 	lds  r14, freqh\v
 	ldi  r23, 24
 	mul  r14, r23		; Muliply high byte by 24
@@ -362,17 +317,6 @@ osc_nosync\v :
 	rol  r20		; Picks up carry bit,
 	sts  accu\v\()h, r14
 
-#ifdef MIX_LIKE
-	; Weird stuff ...
-	; The original code multiplied by 12 and added it twice, saving
-	; the high byte of the phase accumulator in r13 after the first
-	; addition.  It is then given twice the weight of the final high byte
-	; in sample generation.  Since it appears to be nonsense ...
-	mov  r13, r14
-;	rol  r22
-;	sub  r13, r22
-#endif
-#endif
 	;**********************************************************************
 	; ADSR
 	;**********************************************************************
@@ -655,43 +599,25 @@ wave_ptr_ready\v:
 
 	; Get the pulse width. Least significant 4 bits are thrown away.
 
-	lds	r19, pwl\v
+	lds  r19, pwl\v
 	andi r19, 0xf0		; Mask middle 4 bits of pulse width.
-	lds r16, pwh\v
+	lds  r16, pwh\v
 	andi r16, 0x0f		; Mask high 4 bits of pulse width.
-	add r16, r19		; Add together
+	add  r16, r19		; Add together
 	swap r16		; Swap nibbles for pulse width.
-;	mov r19, r16
-	mov r30, r14		; R14 still contains accu3h
+	mov  r30, r14		; R14 still contains accu3h
 				;   (waveform progress value)
 				;   that was loaded far up from here.
-	lpm r22, Z		; Get waveform data
-;	cp r30, r19		; Pulse width threshold exceeded?
+	lpm r23, Z		; Get waveform data
 	cp r30, r16		; Pulse width threshold exceeded?
-	brcc pwm_higha\v
-	clr r22			; 0 when beyond pulse width threshold
-pwm_higha\v :
-#ifdef MIX
-	mov r30, r13		; Even weirder, this is the saved value
-				;   from after the first add
-				;   to the accumulator far above.
-	lpm r21, Z		; Get waveform data again
-;	cp r30, r19		; Pulse width threshold exceeded?
-	cp r30, r16		; Pulse width threshold exceeded?
-	brcc pwm_highb\v
-	clr r21
-#endif
-pwm_highb\v :
+	brcc pwm_high\v
+	clr r23			; 0 when beyond pulse width threshold
+pwm_high\v :
 	rjmp waveval_loaded\v
 no_pulse_selected\v :
 	mov r30, r14	; R14 still contains accu3h (waveform progress value)
 			; that was loaded quite a bit up from here.
-	lpm r22, Z	; Get waveform data
-#ifdef MIX
-	mov r30, r13	; ??? this is the saved value from after the first
-			; add to the accumulator far above.
-	lpm r21, Z
-#endif
+	lpm r23, Z	; Get waveform data
 	rjmp waveval_loaded\v
 
 ringmodulation\v :
@@ -703,27 +629,7 @@ ringmodulation\v :
 	com r23
 	rjmp waveval_postring\v
 waveval_loaded\v :
-#ifdef MIX
-	lds r23, waveform_val\v		; save last waveform value
-	sts waveform_val\v, r22		; store new waveform value
-
-	; The following code is a mathematically broken way to average,
-	; it does:  r23 := (r23 + r22) div 2 + r21) div 2 - 128
-	;
-	; ... but mathematically this isn't the same as:
-	;
-	; r23 := (r23 + r22 + r21) div 4 - 128
-	;  (and you would rather like to divide by 3)
-	; But why average at all??  The -128 makes the output signed.
-
-	add r23, r22
-	ror r23
-	add r23, r21
-	ror r23
-#else
-	mov r23, r22		; FIX ME
-#endif
-	subi r23, 0x80
+	subi r23, 0x80		; Make it signed.
 waveval_ready\v :
 	sbrc r15, b2		; ring modulation enabled?
 	 rjmp ringmodulation\v	; this rjmp is skipped if not enabled
