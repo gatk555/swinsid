@@ -827,8 +827,7 @@ volume_unchanged:
 	lsl r16
 	lsl r16
 	; Add to the current sample
-	satadds r16,  r25	; Macro for signed saturated addition
-	mov r25,  r16
+	satadds r25, r16	; Macro for signed saturated addition
 	rjmp sample_not_written
 zero_sample:
 	clr r25
@@ -923,6 +922,10 @@ reset:
 	sts TCCR2B, r23
 	out p_TCCR0A, r23
 #else
+	; Try to output samples at the CD standard rate of 41.4kHz.
+	; Why?  Whenever they are generated they get loaded into timer 1
+	; for PWM conversion to analogue at an unsynchronised 125 kHz.
+
 	; Initialize timer 0 (timer interrupt)
 	; The interrupt is triggered 32000000 / 8 / 96 = 41667 times per second
 	; Set "clear on compare match" (CTC) mode, disable PWM
@@ -935,13 +938,26 @@ reset:
 	ldi r23, 0x02
 	out p_TCCR0B, r23
 
+	; The voice generation code models updating the phase accumulator
+	; at 1Mz, so to generate samples at 41.1kHZ with the 4MHz clock
+	; configured above, we need a division ratio of (40000)/(411) = 97.56.
+	; But system clock is 985248 Hz (PAL) or 1022727 MHz (NTSC), so to
+	; get the correct pitch we need (40000*1000000)/(411*985248) = 98.78
+	; or (40000*1000000)/(411*1022727) = 95.16.  The OCR0A value is one
+	; less than the required integer division ratio, so should be
+	; 97 (for 1MHz notional clock), 98 (PAL) or 94 (NTSC).
+	; On lemon64.com 97 and 93 were quoted, but the sample rate is high.
+
+	; DM's original comment:
 	; OCR0A = 95 ; Reset timer on counter value 95
-#ifdef TWEAKS
-	ldi r23, 97	; PAL
-#else
-	ldi r23, 95	; Supposed happy medium
-#endif
-	out p_OCR0A, r23
+
+	; The value is loaded from the end of defined Flash memory to
+	; make a hex file that is easy to edit for NTSC.  Change 62 to 5E.
+
+	ldi  r31, hi8(ocr0a_val)
+	ldi  r30, lo8(ocr0a_val)
+	lpm  r23, Z	; Get pitch-determining byte from Flash.
+	out  p_OCR0A, r23
 	; Enable timer 0 output compare match A interrupt
 	ldi r23, 0x02
 	sts TIMSK0, r23
@@ -1317,6 +1333,11 @@ decrel_rates:
 	.byte  11, 12, 13, 15, 16, 17, 19, 21, 22, 24, 26, 28, 30, 32, 34, 36
 	.byte  38, 40, 43, 45, 47, 50, 52, 55, 57, 60, 63, 65, 68, 71, 74, 77
 	.byte  79, 82, 85, 88, 91, 94, 97,100,103,106,109,112,116,119,122,125
+
+; Store the division ratio for sample generation.
+
+ocr0a_val:
+	.byte 98	; For PAL, patch to 94 for NTSC.
 
 .section .bss
 
